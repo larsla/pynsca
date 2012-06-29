@@ -53,6 +53,7 @@ class NSCANotifier(object):
         self.monitoring_port = monitoring_port
         self.encryption_mode = encryption_mode
         self.password = password
+        self.client_addr = None
 
     def _decode_from_server(self, bytes):
         iv, timestamp = struct.unpack(self.fromserver_fmt, bytes)
@@ -129,7 +130,28 @@ class NSCANotifier(object):
         @param plugin_output: textual output
         """
         sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sk.connect((self.monitoring_server, self.monitoring_port))
+
+        # Allow reusing of our socket
+        sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        reuse_failed = False
+
+        # Try to reuse the client address if we have one saved
+        if self.client_addr:
+            try:
+                sk.bind(self.client_addr)
+            except socket.error:
+                reuse_failed = True
+
+        try:
+            sk.connect((self.monitoring_server, self.monitoring_port))
+        except socket.error as e:
+            return e
+
+        # Save the client address for future reuse
+        if not self.client_addr or reuse_failed:
+            self.client_addr = sk.getsockname()
+            reuse_failed = False
 
         # read packet
         buf = ''
@@ -146,4 +168,11 @@ class NSCANotifier(object):
                 self.encryption_mode, self.password)
 
         # and send it
-        sk.send(toserver_pkt)
+        try:
+            sk.send(toserver_pkt)
+            sk.shutdown(2)
+            sk.recv(1)
+        except socket.error as e:
+            return e
+        sk.close()
+        return True
